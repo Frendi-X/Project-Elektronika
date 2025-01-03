@@ -1,0 +1,251 @@
+#define BLYNK_TEMPLATE_ID "TMPL61WNuqA-p"
+#define BLYNK_TEMPLATE_NAME "AUTOCRAFT"
+#define BLYNK_AUTH_TOKEN "ESz-S_6kw3gtzNCEWgEabOKApZvpImRs"  //REOG ROBOTIC AUTH
+#define BLYNK_PRINT Serial
+
+#include <WiFi.h>
+#include <WiFiClient.h>
+#include <BlynkSimpleEsp32.h>
+#include <ESP32Servo.h>
+#include <EEPROM.h>
+
+#define servoPin 13
+#define waterSensor 34
+#define trigPin 12
+#define echoPin 14
+#define relayPin 27
+
+WidgetLCD lcd(V0);
+BlynkTimer timer;
+Servo myServo;
+
+int pos = 0;
+int loopp_buka = 1,
+    loopp_tutup = 1,
+    loopp_pompa = 1,
+    loopp_tutupp = 1;
+
+long durasi, tinggiAir;
+int KetinggianAir;
+long tinggiSensor = 31;
+
+bool relayStatus = false;
+bool servoStatus = false;
+bool isRaining = false;
+
+int addr = 1;
+
+char auth[] = BLYNK_AUTH_TOKEN;
+char ssid[] = "AndroidAP";
+char pass[] = "12345678";
+
+int status = WL_IDLE_STATUS;
+
+void InitWiFi()
+{
+  Serial.println("Connecting to AP ...");
+  WiFi.begin(ssid, pass);
+  while (WiFi.status() != WL_CONNECTED)
+  {
+    Serial.print(".");
+    delay(500);
+  }
+  Serial.println("Connected to AP");
+}
+
+void reconnect()
+{
+  status = WiFi.status();
+  if ( status != WL_CONNECTED)
+  {
+    WiFi.begin(ssid, pass);
+    while (WiFi.status() != WL_CONNECTED)
+    {
+      Serial.print(".");
+      delay(500); // Menyetting SSID dan Password WiFi Tanpa direstart
+    }
+    Serial.print("\nConnected to AP");
+  }
+}
+
+void Ultrasonic_Run() {
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(8);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(8);
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(8);
+
+  durasi = pulseIn(echoPin, HIGH); // menerima suara ultrasonic
+  tinggiAir = (durasi / 2) / 29.1;  // mengubah durasi menjadi jarak (cm)
+  delay(100);
+}
+
+void Baca_Ketinggian() {
+  KetinggianAir = tinggiSensor - tinggiAir;
+  Serial.print("Ketinggian Air : ");
+  Serial.println(KetinggianAir);
+
+  if (KetinggianAir <= 0) {
+    KetinggianAir = 0;
+  }
+}
+
+void sendSensor()
+{
+  Blynk.virtualWrite(V1, KetinggianAir);
+}
+
+void setup()
+{
+  Serial.begin(115200);
+  EEPROM.begin(1024);
+
+  pos = EEPROM.read(addr);
+
+  Serial.print("EEPROM : ");
+  Serial.println(pos);
+
+  pinMode(trigPin, OUTPUT);
+  pinMode(relayPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+  pinMode(waterSensor, INPUT_PULLUP);
+
+  digitalWrite(relayPin, HIGH);
+
+  ESP32PWM::allocateTimer(0);
+  ESP32PWM::allocateTimer(1);
+  ESP32PWM::allocateTimer(2);
+  ESP32PWM::allocateTimer(3);
+  myServo.setPeriodHertz(50);
+  myServo.attach(servoPin, 1000, 2000);
+
+  myServo.attach(servoPin);
+
+  //  WiFi.mode(WIFI_STA);
+  //  WiFi_Manager();
+
+  InitWiFi();
+  Blynk.begin(auth, ssid, pass);
+  timer.setInterval(1000L, sendSensor);
+  lcd.print(0, 0, "Monitoring Air");
+  delay(100);
+  lcd.clear();
+}
+
+void loop()
+{
+  reconnect();
+
+  Ultrasonic_Run();
+  Baca_Ketinggian();
+
+  isRaining = digitalRead(waterSensor) == HIGH;
+
+  if (KetinggianAir >= 9 && !relayStatus) {
+    digitalWrite(relayPin, HIGH); // Relay mati
+    Serial.println("Relay mati");
+
+    // Blynk.email("reog.robotic@gmail.com", "Monitoring Air", "Kondisi");
+    Blynk.logEvent("warning" , "Ketinggian Air : " + String(KetinggianAir) + " " + " (Penuh)");
+    lcd.clear();
+    lcd.print(0, 1, "Tertutup");
+
+    pos = EEPROM.read(addr);
+
+    if (servoStatus) {
+      for (pos = 250; pos >= 0; pos--) {
+        myServo.write(pos);
+        Serial.print("Sudut Tutup : ");
+        Serial.println(pos);
+        EEPROM.write(addr, pos);
+        delay(15);
+      }
+      Serial.println("Servo menutup");
+      servoStatus = false; // Servo sudah tertutup
+    }
+    relayStatus = true; // Tanda relay sudah mati sekali
+  }
+  else if (KetinggianAir <= 2 && relayStatus) {
+    digitalWrite(relayPin, LOW); // Relay menyala
+    Serial.println("Relay menyala");
+
+    //  Blynk.email("reog.robotic@gmail.com", "Monitoring Air", "Kondisi");
+    Blynk.logEvent("warning" , "Air Kosong");
+
+    relayStatus = false; // Tanda relay sudah menyala sekali
+  }
+
+  if (isRaining) {
+    // Kondisi Hujan dan Ketinggian Air di Bawah 9 cm serta Servo Tertutup
+    if (KetinggianAir < 9 && !servoStatus) {
+      Blynk.logEvent("warning", "Kondisi Hujan");
+      lcd.clear();
+      lcd.print(0, 1, "Terbuka");
+
+      // Membuka servo dari 0° ke 250° secara bertahap
+      for (pos = 0; pos <= 250; pos++) {
+        myServo.write(pos);
+        Serial.print("Sudut Buka : ");
+        Serial.println(pos);
+        EEPROM.write(addr, pos);
+        delay(15);
+      }
+
+      Serial.println("Servo membuka");
+      servoStatus = true;  // Servo telah terbuka
+
+      // Jika ketinggian air di bawah 2 cm dan relay belum menyala, maka nyalakan relay
+      if (KetinggianAir <= 2 && !relayStatus) {
+        digitalWrite(relayPin, LOW);  // Relay menyala
+        Serial.println("Relay menyala karena ketinggian < 2 cm saat hujan");
+        relayStatus = true;  // Tandai bahwa relay sudah menyala
+      }
+    }
+
+    // Kondisi Hujan, Ketinggian Air >= 9 cm dan Servo Terbuka
+    else if (KetinggianAir >= 9 && servoStatus) {
+      Blynk.logEvent("warning", "Kondisi Hujan - Air Penuh");
+      lcd.clear();
+      lcd.print(0, 1, "Tertutup");
+
+      // Menutup servo dari 250° ke 0° secara bertahap
+      for (pos = 250; pos >= 0; pos--) {
+        myServo.write(pos);
+        Serial.print("Sudut Tutup : ");
+        Serial.println(pos);
+        EEPROM.write(addr, pos);
+        delay(15);
+      }
+
+      Serial.println("Servo menutup karena air penuh saat hujan");
+      servoStatus = false;  // Servo telah tertutup
+    }
+  }
+
+  else if (!isRaining && servoStatus) {
+    for (pos = 250; pos >= 0; pos--) {
+      myServo.write(pos);
+      Serial.print("Sudut Tutup : ");
+      Serial.println(pos);
+      EEPROM.write(addr, pos);
+      delay(15);
+    }
+    Serial.println("Servo menutup karena tidak hujan");
+    servoStatus = false; // Servo tertutup sekali
+    if (KetinggianAir <= 2 && !relayStatus) {
+      digitalWrite(relayPin, LOW); // Relay menyala
+      Serial.println("Relay menyala karena ketinggian < 2 cm tanpa hujan");
+      relayStatus = false; // Relay sudah menyala
+    }
+  }
+
+  if (KetinggianAir < 0) {
+    lcd.print(0, 0, "Tinggi : 0         ");
+  }
+  else {
+    lcd.print(0, 0, "Tinggi : " + String(KetinggianAir) + "   ");
+  }
+
+  //    Blynk.run();
+}
